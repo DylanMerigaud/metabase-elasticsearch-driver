@@ -247,7 +247,8 @@ def main():
         "quarter-of-year": [[1, 3], [2, 3]],
         "year": None,
         "week": None,
-        "week-of-year": None,
+        # 2024-01-01 is a Monday: with weeks from Sunday, week 2 starts on 2024-01-07
+        "week-of-year": [[9, 1], [11, 1], [14, 2], [21, 2]],
         "day-of-year": None,
         "day": None,
         "hour": None,
@@ -334,6 +335,18 @@ def main():
     rows, err = native("SELECT nope FROM orders")
     check("an unknown column fails with the engine's message",
           rows is None and "nope" in str(err), err)
+
+    # weeks starting on Monday (an instance setting): day of week 1 is Monday
+    mb.call("PUT", "/api/setting/start-of-week", {"value": "monday"}, ok=(200, 204))
+    f = field("placed_at", **{"temporal-unit": "day-of-week"})
+    rows, err = mbql({"aggregation": [["count"]], "breakout": [f], "order-by": [["asc", f]]})
+    check("count by day-of-week, weeks from Monday", rows == [[1, 1], [2, 2], [5, 2], [7, 1]],
+          err or rows)
+    f = field("placed_at", **{"temporal-unit": "week-of-year"})
+    rows, err = mbql({"aggregation": [["count"]], "breakout": [f], "order-by": [["asc", f]]})
+    check("count by week-of-year, weeks from Monday",
+          rows == [[9, 1], [11, 1], [13, 1], [14, 1], [21, 2]], err or rows)
+    mb.call("PUT", "/api/setting/start-of-week", {"value": "sunday"}, ok=(200, 204))
 
     if FAILURES:
         sys.exit(f"{len(FAILURES)} check(s) failed: {', '.join(FAILURES)}")

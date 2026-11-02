@@ -121,6 +121,25 @@
 (defmethod sql.qp/date [:opensearch :month-of-year]    [_ _ expr] [:month expr])
 (defmethod sql.qp/date [:opensearch :quarter-of-year]  [_ _ expr] [:quarter expr])
 (defmethod sql.qp/date [:opensearch :year-of-era]      [_ _ expr] [:year expr])
+;; Week of year with the 1st of January in week 1 and the next weeks starting on `start-of-week`:
+;; (day of year + day of week of the 1st of January, 1 for the start day, + 5) / 7 in integer
+;; division. Kept this shallow on purpose: OpenSearch 3 refuses to run a computed group key past a
+;; few nested calls (its script deserialization filter rejects it), which is what the generic
+;; CEIL(DAYOFYEAR(week) / 7.0) of the :sql parent hits.
+(defn- week-of-year [expr start-of-week]
+  (let [days-after-sunday (mod (inc (binding [driver.common/*start-of-week* start-of-week]
+                                      (driver.common/start-of-week->int)))
+                               7)
+        jan-1             [:makedate [:year expr] [:inline 1]]
+        jan-1             (if (zero? days-after-sunday)
+                            jan-1
+                            [:date_sub jan-1 [:interval [:inline days-after-sunday] :day]])]
+    [:/ [:+ [:dayofyear expr] [:dayofweek jan-1] [:inline 5]] [:inline 7]]))
+
+(defmethod sql.qp/date [:opensearch :week-of-year]          [_ _ expr] (week-of-year expr nil))
+(defmethod sql.qp/date [:opensearch :week-of-year-instance] [_ _ expr] (week-of-year expr nil))
+(defmethod sql.qp/date [:opensearch :week-of-year-us]       [_ _ expr] (week-of-year expr :sunday))
+
 (defmethod sql.qp/date [:opensearch :day-of-week]
   [driver _ expr]
   (sql.qp/adjust-day-of-week driver [:dayofweek expr]
@@ -138,3 +157,14 @@
 (defmethod sql.qp/apply-top-level-clause [:opensearch :page]
   [driver clause honeysql-form query]
   ((get-method sql.qp/apply-top-level-clause [:sql :page]) driver clause honeysql-form query))
+
+;; LIKE: OpenSearch has no ESCAPE clause, and a backslash in SQL text reads differently on
+;; OpenSearch 2 (kept) and 3 (an escape), so a `contains`, `starts-with` or `ends-with` pattern is
+;; sent unescaped: a `%` or `_` in the searched text matches as a wildcard.
+(defmethod sql.qp/escape-like-pattern :opensearch
+  [_driver like-pattern]
+  like-pattern)
+
+(defmethod sql.qp/transform-literal-like-pattern-honeysql :opensearch
+  [_driver like-rhs-honeysql]
+  like-rhs-honeysql)
