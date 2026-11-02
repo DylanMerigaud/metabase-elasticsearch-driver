@@ -1,12 +1,14 @@
 (ns metabase.driver.elasticsearch.client
-  "The HTTP layer: requests to the Elasticsearch SQL and search APIs, cursor paging and error
-  messages. No Metabase dependency: a client is a map of connection details and a transport
-  function, so tests replace the network with recorded responses.
+  "The HTTP layer: requests to the SQL and search APIs of Elasticsearch and OpenSearch, cursor
+  paging and error messages. No Metabase dependency: a client is a map of connection details, the
+  engine and a transport function, so tests replace the network with recorded responses.
 
-  SQL API reference: https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-sql-query"
+  Elasticsearch SQL API: https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-sql-query
+  OpenSearch SQL plugin: https://docs.opensearch.org/latest/search-plugins/sql/sql-ppl-api/"
   (:require [cheshire.core :as json]
             [clojure.string :as str]
-            [malli.core :as m])
+            [malli.core :as m]
+            [metabase.driver.elasticsearch.values :as values])
   (:import (java.net URI)
            (java.net.http HttpClient HttpClient$Redirect HttpRequest HttpRequest$BodyPublishers
                           HttpResponse HttpResponse$BodyHandlers)
@@ -38,9 +40,14 @@
   "One HTTP response, as a transport returns it."
   [:map [:status :int] [:body [:maybe :string]]])
 
+(def Engine
+  "Which SQL API the cluster speaks."
+  [:enum :elasticsearch :opensearch])
+
 (def Client
-  "Connection details plus the function that performs a request."
-  [:map [:details Details] [:transport fn?]])
+  "Connection details, the engine (Elasticsearch when absent) and the function that performs a
+  request."
+  [:map [:details Details] [:transport fn?] [:engine {:optional true} Engine]])
 
 (def Page
   "One page of an SQL answer: the columns (only on the first page), the rows and the cursor of the
@@ -122,37 +129,60 @@
 (m/=> http-transport [:=> [:cat Request] Response])
 
 (defn client
-  "A client on `details` with the real transport, or the one given."
-  [details & [transport]]
-  {:details details :transport (or transport http-transport)})
+  "A client on `details` with the real transport, or the one given, for `engine` (Elasticsearch
+  by default)."
+  [details & [transport engine]]
+  {:details details :transport (or transport http-transport) :engine (or engine :elasticsearch)})
 
-(m/=> client [:=> [:cat Details [:? [:maybe fn?]]] Client])
+(m/=> client [:=> [:cat Details [:? [:maybe fn?]] [:? [:maybe Engine]]] Client])
+
+(defn- engine-of [client]
+  (:engine client :elasticsearch))
+
+(defn engine-name
+  "The display name of an engine."
+  [engine]
+  (if (= :opensearch engine) "OpenSearch" "Elasticsearch"))
+
+(m/=> engine-name [:=> [:cat [:maybe Engine]] :string])
 
 ;;; --------------------------------------------------- errors ----------------------------------------------------
 
-(defn error-message
-  "The message to show for a failed response: Elasticsearch's own `reason` (the SQL parser and
-  verifier messages say what is wrong with the query), else the status and the start of the body."
-  [status body]
-  (let [parsed (try (json/parse-string (str body)) (catch Exception _ nil))
-        err    (when (map? parsed) (get parsed "error"))
-        reason (cond (map? err)    (or (get-in err ["root_cause" 0 "reason"]) (get err "reason"))
-                     (string? err) err)]
-    (if (str/blank? reason)
-      (str "Elasticsearch answered HTTP " status ": " (subs (str body) 0 (min 300 (count (str body)))))
-      reason)))
+(defn- first-line [s]
+  (some->> (str/split-lines (str s)) (map str/trim) (remove str/blank?) first))
 
-(m/=> error-message [:=> [:cat :int [:maybe :string]] :string])
+(defn error-message
+  "The message to show for a failed response: the engine's own `reason` (the SQL parser and
+  verifier messages say what is wrong with the query), followed by the first line of its
+  `details` when it has some (OpenSearch puts the cause there: `Invalid SQL query: can't resolve
+  Symbol(... name=nope)`), else the status and the start of the body."
+  [status body & [engine]]
+  (let [parsed  (try (json/parse-string (str body)) (catch Exception _ nil))
+        err     (when (map? parsed) (get parsed "error"))
+        reason  (cond (map? err)    (or (get-in err ["root_cause" 0 "reason"]) (get err "reason"))
+                      (string? err) err)
+        details (when (map? err) (first-line (get err "details")))]
+    (cond
+      (str/blank? reason)
+      (str (engine-name engine) " answered HTTP " status ": "
+           (subs (str body) 0 (min 300 (count (str body)))))
+
+      (and details (not (str/includes? reason details)))
+      (str reason ": " details)
+
+      :else reason)))
+
+(m/=> error-message [:=> [:cat :int [:maybe :string] [:? [:maybe Engine]]] :string])
 
 (defn call!
   "Perform one request and return the parsed JSON body. A status over 299 throws an ex-info carrying
   Elasticsearch's message, the status and the error type."
-  [{:keys [details transport]} method path body]
+  [{:keys [details transport] :as client} method path body]
   (let [{:keys [status] :as resp} (transport (request details method path body))]
     (if (<= 200 status 299)
       (some-> (:body resp) not-empty json/parse-string)
       (let [parsed (try (json/parse-string (str (:body resp))) (catch Exception _ nil))]
-        (throw (ex-info (error-message status (:body resp))
+        (throw (ex-info (error-message status (:body resp) (engine-of client))
                         {:status     status
                          :error-type (when (map? parsed) (get-in parsed ["error" "type"]))}))))))
 
@@ -182,23 +212,46 @@
 
 (m/=> sql-body [:=> [:cat :string [:maybe [:sequential :any]] pos-int?] :map])
 
-(defn- ->page [body]
-  {:columns (mapv (fn [c] {:name (get c "name") :type (get c "type")}) (get body "columns"))
-   :rows    (vec (get body "rows"))
+(defn ->page
+  "A page of an SQL answer: Elasticsearch's `columns` and `rows`, or the OpenSearch JDBC format's
+  `schema` (a column named by its alias when it has one) and `datarows`."
+  [body]
+  {:columns (mapv (fn [c] {:name (str (or (get c "alias") (get c "name"))) :type (get c "type")})
+                  (or (get body "columns") (get body "schema")))
+   :rows    (vec (or (get body "rows") (get body "datarows")))
    :cursor  (not-empty (get body "cursor"))})
+
+(m/=> ->page [:=> [:cat :map] Page])
+
+(defn- sql-path [client]
+  (if (= :opensearch (engine-of client)) "/_plugins/_sql" "/_sql"))
+
+(defn opensearch-sql-body
+  "The body of an OpenSearch SQL request: the query with its parameters written in as literals.
+  No `fetch_size`: the plugin pages only plain SELECTs and hands any other paged query to its
+  legacy engine, which reads the same SQL differently; without it the answer comes whole (up to
+  the index's `max_result_window`, 10,000 rows by default, unless the query says LIMIT)."
+  [sql params]
+  {"query" (if (seq params) (values/splice-params sql params) sql)})
+
+(m/=> opensearch-sql-body [:=> [:cat :string [:maybe [:sequential :any]]] :map])
 
 (defn query
   "Run `sql` with its `params` and return the first page."
   [client sql params]
-  (->page (call! client :post "/_sql?format=json"
-                 (sql-body sql params (fetch-size (:details client))))))
+  (->page (if (= :opensearch (engine-of client))
+            (call! client :post "/_plugins/_sql?format=jdbc" (opensearch-sql-body sql params))
+            (call! client :post "/_sql?format=json"
+                   (sql-body sql params (fetch-size (:details client)))))))
 
 (m/=> query [:=> [:cat Client :string [:maybe [:sequential :any]]] Page])
 
 (defn next-page
   "The page after `cursor`."
   [client cursor]
-  (->page (call! client :post "/_sql?format=json" {"cursor" cursor})))
+  (->page (call! client :post (str (sql-path client)
+                                   (if (= :opensearch (engine-of client)) "?format=jdbc" "?format=json"))
+                 {"cursor" cursor})))
 
 (m/=> next-page [:=> [:cat Client :string] Page])
 
@@ -207,7 +260,7 @@
   expires on its own (`page_timeout`)."
   [client cursor]
   (try
-    (call! client :post "/_sql/close" {"cursor" cursor})
+    (call! client :post (str (sql-path client) "/close") {"cursor" cursor})
     true
     (catch Exception _ false)))
 
@@ -250,6 +303,38 @@
 (m/=> all-rows [:=> [:cat Client :string] Page])
 
 ;;; --------------------------------------------------- search ----------------------------------------------------
+
+(defn info
+  "The cluster's own description (`GET /`): its name, version and, on OpenSearch,
+  `version.distribution`."
+  [client]
+  (call! client :get "/" nil))
+
+(m/=> info [:=> [:cat Client] :any])
+
+(defn distribution
+  "The engine a `GET /` answer describes: OpenSearch says so in `version.distribution`."
+  [info-body]
+  (if (= "opensearch" (some-> (get-in info-body ["version" "distribution"]) str str/lower-case))
+    :opensearch
+    :elasticsearch))
+
+(m/=> distribution [:=> [:cat :any] Engine])
+
+(defn check-engine!
+  "Throw when the cluster is not the engine the client speaks to, saying which driver to pick. A
+  cluster that does not describe itself (`GET /` refused to a restricted user or API key) passes:
+  the SQL request that follows says what is wrong, if anything."
+  [client]
+  (let [want  (engine-of client)
+        found (try (distribution (info client)) (catch Exception _ nil))]
+    (when (and found (not= found want))
+      (throw (ex-info (str "This cluster is " (engine-name found) ", not " (engine-name want)
+                           ": add it as an " (engine-name found) " database.")
+                      {:engine found :expected want})))
+    true))
+
+(m/=> check-engine! [:=> [:cat Client] :boolean])
 
 (defn search
   "Run a query DSL `body` on `index` (`POST /<index>/_search`) and return the parsed answer."

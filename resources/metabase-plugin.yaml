@@ -1,42 +1,68 @@
 info:
   name: Metabase Elasticsearch Driver
-  version: 0.1.0
-  description: Query Elasticsearch from Metabase through the Elasticsearch SQL REST API.
+  version: 0.2.0
+  description: Query Elasticsearch and OpenSearch from Metabase through their SQL REST APIs.
 contact-info:
   name: Dylan Merigaud
   address: https://github.com/DylanMerigaud/metabase-elasticsearch-driver
 driver:
-  name: elasticsearch
-  display-name: Elasticsearch
-  lazy-load: true
-  parent: sql
-  connection-properties:
-    - host
-    - merge:
-        - port
-        - default: 9200
-    - user
-    - password
-    - name: api-key
-      display-name: API key
-      helper-text: The encoded API key (the "encoded" field Elasticsearch returns when it creates the key). Used instead of the user and password when set.
-      type: password
-      required: false
-    - name: index-pattern
-      display-name: Indices to sync
-      helper-text: A comma separated list of index or alias patterns, for example logs-*,orders. Defaults to every index that does not start with a dot.
-      placeholder: "*"
-      required: false
-    - ssl
-    - advanced-options-start
-    - name: fetch-size
-      display-name: Rows per page
-      helper-text: How many rows each SQL page fetches (the fetch_size of the SQL API).
-      type: integer
-      default: 1000
-      visible-if:
-        advanced-options: true
-    - default-advanced-options
+  - name: elasticsearch
+    display-name: Elasticsearch
+    lazy-load: true
+    parent: sql
+    connection-properties:
+      - host
+      - merge:
+          - port
+          - default: 9200
+      - user
+      - password
+      - name: api-key
+        display-name: API key
+        helper-text: The encoded API key (the "encoded" field Elasticsearch returns when it creates the key). Used instead of the user and password when set.
+        type: password
+        required: false
+      - name: index-pattern
+        display-name: Indices to sync
+        helper-text: A comma separated list of index or alias patterns, for example logs-*,orders. Defaults to every index that does not start with a dot.
+        placeholder: "*"
+        required: false
+      - ssl
+      - advanced-options-start
+      - name: fetch-size
+        display-name: Rows per page
+        helper-text: How many rows each SQL page fetches (the fetch_size of the SQL API).
+        type: integer
+        default: 1000
+        visible-if:
+          advanced-options: true
+      - default-advanced-options
+  - name: opensearch
+    display-name: OpenSearch
+    lazy-load: true
+    parent: elasticsearch
+    connection-properties:
+      - host
+      - merge:
+          - port
+          - default: 9200
+      - user
+      - password
+      - name: api-key
+        display-name: API key
+        helper-text: An API key, sent as "Authorization: ApiKey <key>", for clusters that accept one. Used instead of the user and password when set.
+        type: password
+        required: false
+      - name: index-pattern
+        display-name: Indices to sync
+        helper-text: A comma separated list of index or alias patterns, for example logs-*,orders. Defaults to every index that does not start with a dot.
+        placeholder: "*"
+        required: false
+      - ssl
+      - advanced-options-start
+      - default-advanced-options
 init:
   - step: load-namespace
     namespace: metabase.driver.elasticsearch
+  - step: load-namespace
+    namespace: metabase.driver.opensearch

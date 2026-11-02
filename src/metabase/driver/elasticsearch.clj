@@ -80,11 +80,18 @@
 (defn- details-of [database]
   (driver.conn/effective-details database))
 
+(defn- engine
+  "The SQL API a driver speaks: OpenSearch's plugin for the OpenSearch driver, a child of this one."
+  [driver]
+  (if (isa? driver/hierarchy driver :opensearch) :opensearch :elasticsearch))
+
 (defmethod driver/can-connect? :elasticsearch
   [_driver details]
-  ;; a trivial statement proves the cluster answers, the credentials work and the SQL API is enabled
-  (let [{:keys [rows]} (es/query (es/client details) "SELECT 1" nil)]
-    (= 1 (count rows))))
+  ;; an OpenSearch cluster is named as such; then a trivial statement proves the cluster answers,
+  ;; the credentials work and the SQL API is enabled
+  (let [c (es/client details)]
+    (es/check-engine! c)
+    (= 1 (count (:rows (es/query c "SELECT 1" nil))))))
 
 ;;; ---------------------------------------------------- sync -----------------------------------------------------
 
@@ -207,9 +214,9 @@
              rows)))
 
 (defmethod driver/execute-reducible-query :elasticsearch
-  [_driver {{native :query, :keys [params]} :native} _context respond]
+  [driver {{native :query, :keys [params]} :native} _context respond]
   (let [database (driver-api/database (driver-api/metadata-provider))
-        client   (es/client (details-of database))]
+        client   (es/client (details-of database) nil (engine driver))]
     (if (dsl/dsl-query? native)
       (execute-dsl client native respond)
       (execute-sql client (str/trim native) params respond))))

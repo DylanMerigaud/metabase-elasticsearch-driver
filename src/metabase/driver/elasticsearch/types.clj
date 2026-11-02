@@ -1,8 +1,9 @@
 (ns metabase.driver.elasticsearch.types
-  "Elasticsearch field types to Metabase base types. Pure: no Metabase dependency.
+  "Elasticsearch and OpenSearch field types to Metabase base types. Pure: no Metabase dependency.
 
-  The same names appear in the `mapping` column of `SHOW COLUMNS` (sync) and in the `type` of each
-  column the SQL API returns (query results)."
+  The same names appear in the `mapping` column of `SHOW COLUMNS` and in index mappings (sync), and
+  in the `type` of each column an SQL API returns (query results; OpenSearch says `timestamp` for a
+  date field)."
   (:require [malli.core :as m]))
 
 (def ^:private base-types
@@ -10,6 +11,7 @@
    "constant_keyword" :type/Text
    "wildcard"         :type/Text
    "text"             :type/Text
+   "string"           :type/Text
    "match_only_text"  :type/Text
    "version"          :type/Text
    "ip"               :type/IPAddress
@@ -24,6 +26,7 @@
    "scaled_float"     :type/Float
    "boolean"          :type/Boolean
    "datetime"         :type/DateTimeWithLocalTZ
+   "timestamp"        :type/DateTimeWithLocalTZ
    "date"             :type/DateTimeWithLocalTZ
    "date_nanos"       :type/DateTimeWithLocalTZ
    "time"             :type/Time
@@ -42,7 +45,8 @@
 (def ^:private unqueryable
   #{"object" "nested" "unsupported" "null" "binary" "join" "flattened" "dense_vector"
     "sparse_vector" "rank_feature" "rank_features" "aggregate_metric_double" "histogram"
-    "percolator" "completion" "search_as_you_type" "alias"})
+    "percolator" "completion" "search_as_you_type" "alias" "flat_object" "knn_vector"
+    "semantic"})
 
 (defn queryable?
   "Whether a column of this Elasticsearch type can be selected through the SQL API. Objects and
@@ -52,7 +56,7 @@
 
 (m/=> queryable? [:=> [:cat [:maybe :string]] :boolean])
 
-(def ^:private temporal #{"datetime" "date" "date_nanos"})
+(def ^:private temporal #{"datetime" "timestamp" "date" "date_nanos"})
 
 (defn temporal?
   "Whether values of this Elasticsearch type are date-times (returned as ISO-8601 strings)."

@@ -1,0 +1,1 @@
+{"error":{"reason":"Error occurred in OpenSearch engine: no such index [nope_index]","details":"[nope_index] IndexNotFoundException[no such index [nope_index]]\nFor more details, please send request for Json format to see the raw response from OpenSearch engine.","type":"IndexNotFoundException"},"status":404}
