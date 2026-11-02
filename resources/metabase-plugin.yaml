@@ -50,7 +50,7 @@ driver:
       - password
       - name: api-key
         display-name: API key
-        helper-text: An API key, sent as "Authorization: ApiKey <key>", for clusters that accept one. Used instead of the user and password when set.
+        helper-text: "An API key, sent in an ApiKey authorization header, for clusters that accept one. Used instead of the user and password when set."
         type: password
         required: false
       - name: index-pattern
