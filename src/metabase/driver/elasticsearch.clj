@@ -80,11 +80,18 @@
 (defn- details-of [database]
   (driver.conn/effective-details database))
 
+(defn- engine
+  "The SQL API a driver speaks: OpenSearch's plugin for the OpenSearch driver, a child of this one."
+  [driver]
+  (if (isa? driver/hierarchy driver :opensearch) :opensearch :elasticsearch))
+
 (defmethod driver/can-connect? :elasticsearch
   [_driver details]
-  ;; a trivial statement proves the cluster answers, the credentials work and the SQL API is enabled
-  (let [{:keys [rows]} (es/query (es/client details) "SELECT 1" nil)]
-    (= 1 (count rows))))
+  ;; an OpenSearch cluster is named as such; then a trivial statement proves the cluster answers,
+  ;; the credentials work and the SQL API is enabled
+  (let [c (es/client details)]
+    (es/check-engine! c)
+    (= 1 (count (:rows (es/query c "SELECT 1" nil))))))
 
 ;;; ---------------------------------------------------- sync -----------------------------------------------------
 
@@ -154,11 +161,34 @@
 (defmethod sql.qp/date [:elasticsearch :month-of-year]    [_ _ expr] [:month_of_year expr])
 (defmethod sql.qp/date [:elasticsearch :quarter-of-year]  [_ _ expr] [:quarter expr])
 (defmethod sql.qp/date [:elasticsearch :year-of-era]      [_ _ expr] [:year expr])
+(defn- days-after-sunday
+  "How many days the week start (the start-of-week setting, or `start-of-week`) falls after Sunday."
+  [start-of-week]
+  (mod (inc (binding [driver.common/*start-of-week* start-of-week]
+              (driver.common/start-of-week->int)))
+       7))
+
 (defmethod sql.qp/date [:elasticsearch :day-of-week]
-  [driver _ expr]
-  ;; DAY_OF_WEEK is 1 for Sunday
-  (sql.qp/adjust-day-of-week driver [:day_of_week expr]
-                             (driver.common/start-of-week-offset-for-day :sunday)))
+  [_driver _ expr]
+  ;; DAY_OF_WEEK is 1 for Sunday; shifting the date back by the days the week start falls after
+  ;; Sunday makes it 1 for the week start. The arithmetic of the :sql parent sends its numbers as
+  ;; parameters, which the SQL API cannot take inside a group key ("Cannot cast ... Source to ...
+  ;; Expression").
+  (let [k (days-after-sunday nil)]
+    [:day_of_week (if (zero? k) expr [:date_add [:inline "day"] [:inline (- k)] expr])]))
+
+;; Week of year with the 1st of January in week 1 and the next weeks starting on `start-of-week`
+;; (Metabase's definition): (day of year + day of week of the 1st of January, 1 for the start day,
+;; + 5) / 7, rounded down.
+(defn- week-of-year [expr start-of-week]
+  (let [k     (days-after-sunday start-of-week)
+        jan-1 (trunc :year expr)
+        jan-1 (if (zero? k) jan-1 [:date_add [:inline "day"] [:inline (- k)] jan-1])]
+    [:floor [:/ [:+ [:day_of_year expr] [:day_of_week jan-1] [:inline 5]] [:inline 7]]]))
+
+(defmethod sql.qp/date [:elasticsearch :week-of-year]          [_ _ expr] (week-of-year expr nil))
+(defmethod sql.qp/date [:elasticsearch :week-of-year-instance] [_ _ expr] (week-of-year expr nil))
+(defmethod sql.qp/date [:elasticsearch :week-of-year-us]       [_ _ expr] (week-of-year expr :sunday))
 
 ;; In ORDER BY the SQL API binds a name to a SELECT alias before a field: with a group-by on
 ;; DAY_OF_WEEK("placed_at") AS "placed_at", an ORDER BY DAY_OF_WEEK("placed_at") would read the
@@ -207,9 +237,9 @@
              rows)))
 
 (defmethod driver/execute-reducible-query :elasticsearch
-  [_driver {{native :query, :keys [params]} :native} _context respond]
+  [driver {{native :query, :keys [params]} :native} _context respond]
   (let [database (driver-api/database (driver-api/metadata-provider))
-        client   (es/client (details-of database))]
+        client   (es/client (details-of database) nil (engine driver))]
     (if (dsl/dsl-query? native)
       (execute-dsl client native respond)
       (execute-sql client (str/trim native) params respond))))

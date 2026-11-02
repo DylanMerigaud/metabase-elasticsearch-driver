@@ -1,6 +1,8 @@
 (ns metabase.driver.elasticsearch.sync
-  "Tables and fields from the answers of `SHOW TABLES` and `SHOW COLUMNS IN <table>`. Pure: the
-  driver runs the two statements through the SQL API, these functions read their pages.
+  "Tables and fields. Elasticsearch: from the answers of `SHOW TABLES` and `SHOW COLUMNS IN
+  <table>`. OpenSearch, whose SQL plugin has no equivalent of SHOW COLUMNS: from `_cat/indices`,
+  `_cat/aliases` and the index mappings. Pure: the driver makes the requests, these functions read
+  the answers.
 
   Reading the catalogue through the SQL API, rather than the raw `_mapping`, means sync sees exactly
   the columns the SQL engine can query: multi-fields such as `title.keyword` included, objects
@@ -87,3 +89,63 @@
   (str \" (str/replace s "\"" "\"\"") \"))
 
 (m/=> quote-identifier [:=> [:cat :string] :string])
+
+;;; ------------------------------------------------- OpenSearch --------------------------------------------------
+
+(def CatRows
+  "The answer of `_cat/indices` or `_cat/aliases` with `format=json`."
+  [:sequential [:map-of :string :any]])
+
+(defn cat-table-names
+  "The sorted, distinct table names kept by `pattern` from the rows of `_cat/indices` (open indices
+  only) and `_cat/aliases`."
+  [index-rows alias-rows pattern]
+  (->> (concat (keep (fn [r] (when (not= "close" (get r "status")) (get r "index"))) index-rows)
+               (keep #(get % "alias") alias-rows))
+       (map str)
+       (filter #(matches-pattern? pattern %))
+       distinct
+       sort
+       vec))
+
+(m/=> cat-table-names [:=> [:cat CatRows CatRows [:maybe :string]] [:vector :string]])
+
+(defn- leaves
+  "[name type] of every queryable leaf below `properties`, objects flattened to dotted names.
+  Nested fields and everything below them are left out, and so are multi-fields (`fields`): the
+  OpenSearch SQL plugin cannot select `notes.keyword`, it uses the keyword sub-field of `notes` by
+  itself where it needs one."
+  [prefix properties]
+  (mapcat (fn [[k v]]
+            (let [path (if prefix (str prefix "." k) (str k))
+                  t    (get v "type")]
+              (cond
+                (= "nested" t)                                    []
+                (and (map? (get v "properties"))
+                     (contains? #{nil "object"} t))              (leaves path (get v "properties"))
+                (types/queryable? t)                              [[path t]]
+                :else                                             [])))
+          (sort-by key properties)))
+
+(def Mappings
+  "The answer of `GET /<index>/_mapping`: index name to its mappings."
+  [:map-of :string :any])
+
+(defn mapping-fields
+  "The fields of a table from the answer of `GET /<table>/_mapping`. A pattern or an alias answers
+  with several indices: their fields are merged, a name keeping the type of the first index (in
+  name order) that has it."
+  [mappings]
+  (let [pairs (mapcat (fn [[_ m]] (leaves nil (get-in m ["mappings" "properties"])))
+                      (sort-by key mappings))
+        seen  (volatile! #{})]
+    (->> pairs
+         (remove (fn [[n _]] (if (@seen n) true (do (vswap! seen conj n) false))))
+         (map-indexed (fn [i [n t]]
+                        {:name              n
+                         :database-type     t
+                         :base-type         (types/base-type t)
+                         :database-position i}))
+         vec)))
+
+(m/=> mapping-fields [:=> [:cat Mappings] [:vector Field]])

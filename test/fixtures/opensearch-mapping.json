@@ -1,0 +1,2 @@
+{"orders":{"mappings":{"properties":{"address":{"properties":{"city":{"type":"keyword"},"geo":{"type":"object","properties":{"zip":{"type":"keyword"}}}}},"customer":{"type":"keyword"},"embedding":{"type":"knn_vector","dimension":3},"lines":{"type":"nested","properties":{"sku":{"type":"keyword"}}},"notes":{"type":"text","fields":{"keyword":{"type":"keyword"}}},"paid":{"type":"boolean"},"placed_at":{"type":"date"},"quantity":{"type":"integer"},"total":{"type":"double"}}}},
+ "orders-2023":{"mappings":{"properties":{"customer":{"type":"text"},"refund":{"type":"double"}}}}}

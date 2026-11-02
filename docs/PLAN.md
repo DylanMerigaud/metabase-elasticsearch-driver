@@ -125,3 +125,25 @@ through their SQL REST endpoints, with a raw query DSL escape hatch. Written 202
   the plugin, a real cluster as a service container, Elasticsearch 9 with basic auth.
 - The build host has no container runtime; unit tests run locally (a user JDK and the Clojure
   CLI), integration only on GitHub Actions, free once the repository is public.
+
+## 8. v0.2.0: OpenSearch (2026-11-02)
+
+- A second driver, `opensearch`, a child of `elasticsearch` in the same plugin manifest (Metabase
+  reads a list under `driver:`), rather than an `engine` property: Metabase dispatches on the
+  driver, and OpenSearch then shows by name in the database list.
+- The dialect was read from the engines before any code: throwaway probe runs on GitHub Actions
+  against OpenSearch 2.19.7 and 3.9.0 (and Elasticsearch 8 and 9 for the day-of-week bug). What
+  they showed, and what the driver does about it:
+  - `fetch_size` hands any query but a plain SELECT to the legacy engine (other types, functions
+    refused): never sent; one response, `max_result_window` rows unless LIMIT;
+  - a double quoted text is a string: backtick identifiers;
+  - no DATE_TRUNC: TIMESTAMP(DATE_FORMAT(...)), DATE_SUB for quarter and week;
+  - a multi-field cannot be selected: not synced;
+  - a group key computed by a function sorts as text when every sort key is a group key: COUNT(*)
+    as a last sort key;
+  - OpenSearch 3 refuses deeply nested computed group keys: a shallow week-of-year formula;
+  - no ESCAPE in LIKE, and a backslash reads differently on 2 and 3: patterns unescaped,
+    backslash values refused;
+  - parameters work only on the legacy path: written in as literals.
+- The new start-of-week checks found two Elasticsearch bugs of v0.1.0 (week of year one week
+  early, day of week from Monday failing); fixed in the same release.

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""End-to-end test of the driver inside a running Metabase, against a seeded Elasticsearch.
+"""End-to-end test of the driver inside a running Metabase, against a seeded Elasticsearch or
+OpenSearch cluster.
 
-Starts nothing: the CI starts Elasticsearch (a service container) and Metabase (with the built jar
+Starts nothing: the CI starts the cluster (a service container) and Metabase (with the built jar
 in its plugins directory). This script seeds an index, sets Metabase up, adds the database, waits
 for the sync, then runs questions and native queries through Metabase's REST API and checks each
 answer. Standard library only.
 
-Environment: ES_URL (http://localhost:9200), ES_USER and ES_PASSWORD (optional), MB_URL
-(http://localhost:3000).
+Environment: ENGINE (elasticsearch or opensearch, the Metabase driver to use), ES_URL
+(http://localhost:9200), ES_USER and ES_PASSWORD (optional), MB_URL (http://localhost:3000).
 """
 import base64
 import json
@@ -21,6 +22,9 @@ ES_URL = os.environ.get("ES_URL", "http://localhost:9200")
 ES_USER = os.environ.get("ES_USER") or None
 ES_PASSWORD = os.environ.get("ES_PASSWORD") or None
 MB_URL = os.environ.get("MB_URL", "http://localhost:3000")
+ENGINE = os.environ.get("ENGINE", "elasticsearch")
+OPENSEARCH = ENGINE == "opensearch"
+OTHER = "elasticsearch" if OPENSEARCH else "opensearch"
 
 DOCS = [
     {"customer": "alice", "notes": "first order", "total": 12.5, "quantity": 1,
@@ -145,11 +149,22 @@ def main():
                "index-pattern": "orders,events-*"}
     if ES_USER:
         details.update(user=ES_USER, password=ES_PASSWORD)
-    db = mb.call("POST", "/api/database", {"engine": "elasticsearch", "name": "es",
+    out = mb.call("POST", "/api/database", {"engine": OTHER, "name": "wrong engine",
+                                            "details": details, "is_full_sync": True},
+                  ok=(200, 400, 500))
+    check(f"the {OTHER} driver refuses this cluster and names the right one",
+          "This cluster is" in str(out) and "id" not in out, str(out)[:500])
+
+    db = mb.call("POST", "/api/database", {"engine": ENGINE, "name": "cluster",
                                            "details": details, "is_full_sync": True})
     db_id = db["id"]
-    check("the plugin registers the elasticsearch engine",
-          mb.call("GET", f"/api/database/{db_id}").get("engine") == "elasticsearch", db)
+    check(f"the plugin registers the {ENGINE} engine",
+          mb.call("GET", f"/api/database/{db_id}").get("engine") == ENGINE, db)
+
+    # OpenSearch's SQL plugin cannot select a multi-field such as notes.keyword: not synced there
+    expected = {"customer", "notes", "total", "quantity", "placed_at", "paid", "address.city"}
+    if not OPENSEARCH:
+        expected.add("notes.keyword")
 
     # wait for the sync to see the orders fields
     deadline = time.time() + 240
@@ -157,15 +172,13 @@ def main():
     while time.time() < deadline:
         meta = mb.call("GET", f"/api/database/{db_id}/metadata")
         tables = {t["name"]: t for t in meta.get("tables", [])}
-        if "orders" in tables and len(tables["orders"].get("fields", [])) >= 8:
+        if "orders" in tables and len(tables["orders"].get("fields", [])) >= len(expected):
             break
         time.sleep(3)
     check("sync finds the indices the pattern keeps", set(tables) == {"orders", "events-2024"},
           sorted(tables))
     orders = tables["orders"]
     fields = {f["name"]: f for f in orders["fields"]}
-    expected = {"customer", "notes", "notes.keyword", "total", "quantity", "placed_at", "paid",
-                "address.city"}
     check("sync finds every column, object leaves and multi-fields included",
           set(fields) == expected, sorted(fields))
     check("sync maps the types",
@@ -234,7 +247,8 @@ def main():
         "quarter-of-year": [[1, 3], [2, 3]],
         "year": None,
         "week": None,
-        "week-of-year": None,
+        # 2024-01-01 is a Monday: with weeks from Sunday, week 2 starts on 2024-01-07
+        "week-of-year": [[9, 1], [11, 1], [14, 2], [21, 2]],
         "day-of-year": None,
         "day": None,
         "hour": None,
@@ -254,8 +268,13 @@ def main():
                       "page": {"page": 1, "items": 2}})
     check("first page of a paginated question", rows == [["dave"], ["bob"]], err or rows)
 
-    rows, err = mbql({"fields": [field("customer")], "page": {"page": 2, "items": 2}})
-    check("a later page is refused clearly", rows is None and "OFFSET" in str(err), err)
+    if OPENSEARCH:
+        rows, err = mbql({"fields": [field("customer")], "order-by": [["desc", field("total")]],
+                          "page": {"page": 2, "items": 2}})
+        check("a later page of a paginated question", rows == [["alice"], ["bob"]], err or rows)
+    else:
+        rows, err = mbql({"fields": [field("customer")], "page": {"page": 2, "items": 2}})
+        check("a later page is refused clearly", rows is None and "OFFSET" in str(err), err)
 
     rows, err = mbql({"aggregation": [["count"]], "filter": [">", field("total"), 10]})
     check("numeric filter", rows == [[4]], err or rows)
@@ -264,6 +283,14 @@ def main():
                       "filter": ["between", field("placed_at", **{"temporal-unit": "day"}),
                                  "2024-03-01", "2024-03-31"]})
     check("date range filter", rows == [[3]], err or rows)
+
+    rows, err = mbql({"aggregation": [["count"]],
+                      "filter": ["time-interval", field("placed_at"), -5000, "day"]})
+    check("relative date filter", rows == [[6]], err or rows)
+
+    rows, err = mbql({"aggregation": [["count"]],
+                      "filter": ["=", field("customer"), "o'brien"]})
+    check("a quote in a filter value", rows == [[0]], err or rows)
 
     rows, err = mbql({"aggregation": [["count"]], "filter": ["=", field("address.city"), "Lyon"]})
     check("filter on an object leaf", rows == [[2]], err or rows)
@@ -298,13 +325,28 @@ def main():
           rows == [["Lille", 1, 100.0], ["Lyon", 2, 20.0], ["Nantes", 1, 4.0],
                    ["Paris", 2, 41.0]], err or rows)
 
-    rows, err = native("SELECT o.customer FROM orders o JOIN orders p ON o.customer = p.customer")
-    check("a join fails with the engine's message",
-          rows is None and "JOIN" in str(err).upper(), err)
+    if not OPENSEARCH:
+        # OpenSearch 2 and 3 hand a JOIN to the SQL plugin's legacy engine, which runs it
+        rows, err = native("SELECT o.customer FROM orders o JOIN orders p "
+                           "ON o.customer = p.customer")
+        check("a join fails with the engine's message",
+              rows is None and "JOIN" in str(err).upper(), err)
 
     rows, err = native("SELECT nope FROM orders")
     check("an unknown column fails with the engine's message",
           rows is None and "nope" in str(err), err)
+
+    # weeks starting on Monday (an instance setting): day of week 1 is Monday
+    mb.call("PUT", "/api/setting/start-of-week", {"value": "monday"}, ok=(200, 204))
+    f = field("placed_at", **{"temporal-unit": "day-of-week"})
+    rows, err = mbql({"aggregation": [["count"]], "breakout": [f], "order-by": [["asc", f]]})
+    check("count by day-of-week, weeks from Monday", rows == [[1, 1], [2, 2], [5, 2], [7, 1]],
+          err or rows)
+    f = field("placed_at", **{"temporal-unit": "week-of-year"})
+    rows, err = mbql({"aggregation": [["count"]], "breakout": [f], "order-by": [["asc", f]]})
+    check("count by week-of-year, weeks from Monday",
+          rows == [[9, 1], [11, 1], [13, 1], [14, 1], [21, 2]], err or rows)
+    mb.call("PUT", "/api/setting/start-of-week", {"value": "sunday"}, ok=(200, 204))
 
     if FAILURES:
         sys.exit(f"{len(FAILURES)} check(s) failed: {', '.join(FAILURES)}")

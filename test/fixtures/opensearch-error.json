@@ -1,0 +1,1 @@
+{"error":{"reason":"Invalid SQL query","details":"can't resolve Symbol(namespace=FIELD_NAME, name=nope) in type env","type":"SemanticCheckException"},"status":400}
