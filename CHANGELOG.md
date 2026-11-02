@@ -13,7 +13,8 @@
   month) as text.
 - Elasticsearch: week of year follows Metabase's definition (the 1st of January in week 1, the
   next weeks from the start-of-week setting); it was one week early when the year did not start on
-  that day. Day of week with a start-of-week other than Sunday no longer fails in the SQL API.
+  that day. Day of week with a start-of-week other than Sunday no longer fails in the SQL API (its group key
+  shifts the date instead of sending numbers as parameters).
 - Each driver reads `GET /` and refuses a cluster of the other engine, naming the driver to pick.
 - Error messages carry OpenSearch's `details` line (`Invalid SQL query: can't resolve
   Symbol(... name=nope)`).
