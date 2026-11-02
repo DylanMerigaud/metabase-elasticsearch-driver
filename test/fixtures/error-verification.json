@@ -1,0 +1,1 @@
+{"error":{"root_cause":[{"type":"verification_exception","reason":"Found 1 problem\nline 1:8: Unknown column [nope]"}],"type":"verification_exception","reason":"Found 1 problem\nline 1:8: Unknown column [nope]"},"status":400}

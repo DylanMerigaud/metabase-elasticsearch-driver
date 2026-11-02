@@ -1,0 +1,7 @@
+{"took":5,"timed_out":false,"hits":{"total":{"value":3,"relation":"eq"},"hits":[]},
+ "aggregations":{"by_customer":{"doc_count_error_upper_bound":0,"sum_other_doc_count":0,"buckets":[
+   {"key":"alice","doc_count":2,"revenue":{"value":20.0},"by_month":{"buckets":[
+     {"key_as_string":"2024-03-01T00:00:00.000Z","key":1709251200000,"doc_count":1,"revenue":{"value":12.5}},
+     {"key_as_string":"2024-04-01T00:00:00.000Z","key":1711929600000,"doc_count":1,"revenue":{"value":7.5}}]}},
+   {"key":"bob","doc_count":1,"revenue":{"value":7.0},"by_month":{"buckets":[
+     {"key_as_string":"2024-03-01T00:00:00.000Z","key":1709251200000,"doc_count":1,"revenue":{"value":7.0}}]}}]}}}

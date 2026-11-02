@@ -1,0 +1,1 @@
+{"error":{"root_cause":[{"type":"parsing_exception","reason":"line 1:22: Queries with JOIN are not yet supported"}],"type":"parsing_exception","reason":"line 1:22: Queries with JOIN are not yet supported"},"status":400}

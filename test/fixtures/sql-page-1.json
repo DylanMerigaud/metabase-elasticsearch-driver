@@ -1,0 +1,3 @@
+{"columns":[{"name":"customer","type":"keyword"},{"name":"total","type":"double"},{"name":"placed_at","type":"datetime"}],
+ "rows":[["alice",12.5,"2024-03-01T10:00:00.000Z"],["bob",7.0,"2024-03-02T11:30:00.000Z"]],
+ "cursor":"c2Vjb25kLXBhZ2U="}

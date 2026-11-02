@@ -1,0 +1,13 @@
+{;; Metabase provides Clojure, cheshire and malli at runtime: the plugin jar carries only its own
+ ;; sources and resources/metabase-plugin.yaml.
+ :paths ["src" "resources"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+        cheshire/cheshire   {:mvn/version "5.13.0"}
+        metosin/malli       {:mvn/version "0.16.4"}}
+ :aliases
+ {:test  {:extra-paths ["test"]
+          :extra-deps  {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+          :exec-fn     cognitect.test-runner.api/test
+          :exec-args   {:dirs ["test"]}}
+  :build {:deps       {io.github.clojure/tools.build {:mvn/version "0.10.5"}}
+          :ns-default build}}}

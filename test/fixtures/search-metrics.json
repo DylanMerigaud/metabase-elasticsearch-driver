@@ -1,0 +1,2 @@
+{"took":1,"hits":{"total":{"value":3,"relation":"eq"},"hits":[]},
+ "aggregations":{"avg_total":{"value":8.25},"max_total":{"value":12.5}}}

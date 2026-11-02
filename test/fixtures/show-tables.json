@@ -1,0 +1,2 @@
+{"columns":[{"name":"catalog","type":"keyword"},{"name":"name","type":"keyword"},{"name":"type","type":"keyword"},{"name":"kind","type":"keyword"}],
+ "rows":[["docker-cluster","orders","TABLE","INDEX"],["docker-cluster","logs-2024.03","TABLE","INDEX"],["docker-cluster","logs","VIEW","ALIAS"],["docker-cluster",".kibana_1","TABLE","INDEX"],["docker-cluster","orders","TABLE","INDEX"]]}

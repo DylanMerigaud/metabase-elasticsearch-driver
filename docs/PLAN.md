@@ -18,7 +18,7 @@ through their SQL REST endpoints, with a raw query DSL escape hatch. Written 202
 
 ## 1. Scope
 
-- Two engines behind one driver, chosen per connection by an `engine` connection property:
+- (Revised, section 7: Elasticsearch only in v0.1.0.) Two engines behind one driver, chosen per connection by an `engine` connection property:
   - Elasticsearch 8 and 9: `POST /_sql?format=json` (free Basic licence, no Platinum JDBC),
     cursor pagination with `POST /_sql` `{"cursor": ...}` and `POST /_sql/close`.
     Spec: https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-sql-query
@@ -107,11 +107,21 @@ through their SQL REST endpoints, with a raw query DSL escape hatch. Written 202
 5. `python3 scripts/oss_lib_harness.py check ... --repo https://github.com/DylanMerigaud/metabase-elasticsearch-driver`
    says PASS. Until then the repository stays private.
 
-## 7. State on 2026-11-02 (where a resume starts)
+## 7. Revisions made while building (2026-11-02)
 
-Blocked before any code, on two things:
-- The build box (gc-hub) has 1.8 GB free (0.27 GB an hour earlier) and no JDK, no Clojure CLI,
-  no container runtime. A JDK, the Metabase jar and its dependencies need about 2 GB, and the
-  integration engines need more. The disk door (growth-cockpit scripts/disk_reclaim.py) frees
-  nothing more; what remains is classed as Dylan's to decide.
-- The harness has no JVM ecosystem (section 5), so no Metabase driver can reach PASS yet.
+- OpenSearch is out of v0.1.0. Its SQL plugin has its own date functions (no `DATE_TRUNC`) and
+  its own API; supporting it blind would have doubled the risk of the release. The README says
+  so under Limits; it is the first candidate for v0.2.0.
+- One jar for every supported Metabase: the plugin ships Clojure sources only (no AOT), and the
+  driver API it uses (`describe-database*`, `describe-table`, `execute-reducible-query`,
+  `database-supports?`, `sql.qp/date`, `sql.qp/->honeysql`, `driver-api/metadata-provider`,
+  `driver.conn/effective-details`) is identical in v0.63.22, v0.64.4 and v0.65.2 (read from
+  their sources). The CI matrix proves the one jar on each.
+- Sync reads `SHOW TABLES` and `SHOW COLUMNS` through the SQL API instead of `_mapping`, so it
+  sees exactly what SQL can select (object leaves, multi-fields), and skips nested fields.
+- Date-time literals are inlined as `CAST('<ISO in UTC>' AS DATETIME)`, formatted by the driver
+  from java.time values; the other values travel as the SQL API's `params`.
+- Integration runs through Metabase's REST API (`integration/run.py`): a real Metabase jar with
+  the plugin, a real cluster as a service container, Elasticsearch 9 with basic auth.
+- The build host has no container runtime; unit tests run locally (a user JDK and the Clojure
+  CLI), integration only on GitHub Actions, free once the repository is public.

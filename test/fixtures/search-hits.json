@@ -1,0 +1,3 @@
+{"took":3,"timed_out":false,"hits":{"total":{"value":2,"relation":"eq"},"hits":[
+ {"_index":"orders","_id":"1","_score":1.0,"_source":{"customer":"alice","total":12.5,"address":{"city":"Lyon","zip":"69001"}}},
+ {"_index":"orders","_id":"2","_score":1.0,"_source":{"customer":"bob","paid":true}}]}}

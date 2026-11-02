@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit tests, lint, jar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: DeLaSalle/setup-clojure@13.4
+        with:
+          cli: 1.12.0.1530
+          clj-kondo: 2025.06.05
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+          key: deps-${{ hashFiles('deps.edn') }}
+      - name: Unit tests
+        run: clojure -X:test
+      - name: Lint
+        run: clj-kondo --lint src test --fail-level error
+      - name: Build the plugin jar
+        run: clojure -T:build jar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-jar
+          path: target/elasticsearch.metabase-driver.jar
+
+  integration:
+    name: Metabase ${{ matrix.metabase }} on Elasticsearch ${{ matrix.elasticsearch }}
+    needs: unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        metabase: [v0.63.22, v0.64.4, v0.65.2]
+        elasticsearch: ["8.19.0", "9.1.0"]
+    services:
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:${{ matrix.elasticsearch }}
+        env:
+          discovery.type: single-node
+          ES_JAVA_OPTS: -Xms512m -Xmx512m
+          xpack.security.enabled: ${{ startsWith(matrix.elasticsearch, '9') }}
+          xpack.security.http.ssl.enabled: "false"
+          ELASTIC_PASSWORD: ci-password
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -s -u elastic:ci-password http://localhost:9200/_cluster/health | grep -qE 'green|yellow'"
+          --health-interval 10s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-jar
+          path: plugins
+      - uses: actions/cache@v4
+        with:
+          path: metabase.jar
+          key: metabase-${{ matrix.metabase }}
+      - name: Download Metabase
+        run: test -f metabase.jar || curl -fsSL -o metabase.jar "https://downloads.metabase.com/${{ matrix.metabase }}/metabase.jar"
+      - name: Start Metabase with the plugin
+        run: |
+          MB_PLUGINS_DIR=$PWD/plugins MB_DB_FILE=$PWD/mb MB_JETTY_PORT=3000 \
+            nohup java -Xmx2g -jar metabase.jar > metabase.log 2>&1 &
+      - name: End-to-end checks
+        env:
+          ES_URL: http://localhost:9200
+          ES_USER: ${{ startsWith(matrix.elasticsearch, '9') && 'elastic' || '' }}
+          ES_PASSWORD: ${{ startsWith(matrix.elasticsearch, '9') && 'ci-password' || '' }}
+          MB_URL: http://localhost:3000
+        run: python3 integration/run.py
+      - name: Metabase log
+        if: always()
+        run: grep -iE "elasticsearch|error|exception" metabase.log | tail -200 || true
+
+  release:
+    name: draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: integration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-jar
+          path: target
+      - name: Attach the jar to a draft release of the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" target/elasticsearch.metabase-driver.jar --clobber
+          else
+            gh release create "$tag" target/elasticsearch.metabase-driver.jar --draft \
+              --title "$tag" --notes "Plugin jar for Metabase v0.63, v0.64 and v0.65. Put it in the plugins directory of Metabase and restart."
+          fi
