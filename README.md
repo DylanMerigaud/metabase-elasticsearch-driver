@@ -87,8 +87,8 @@ takes.
 ```
 
 Without `aggs`, each hit is a row: `_id` then every `_source` field, objects flattened to dotted
-names. With `aggs`, each leaf bucket is a row: a column per bucket level holding its key, plus
-`doc_count` and each metric of the deepest level.
+names. With `aggs`, each leaf bucket is a row: a column per bucket level holding its key, a column per
+metric of any level, and `doc_count` (the deepest level's count).
 
 ```json
 {"index": "orders", "size": 0,

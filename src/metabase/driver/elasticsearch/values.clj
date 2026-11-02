@@ -5,8 +5,11 @@
   (:import (java.time Instant LocalDate LocalDateTime OffsetDateTime ZoneOffset ZonedDateTime)
            (java.time.format DateTimeFormatter DateTimeParseException)))
 
+(def ^:private ^DateTimeFormatter iso-millis
+  (DateTimeFormatter/ofPattern "uuuu-MM-dd'T'HH:mm:ss.SSSX"))
+
 (defn- iso-utc ^String [^OffsetDateTime t]
-  (.format (.withOffsetSameInstant t ZoneOffset/UTC) DateTimeFormatter/ISO_OFFSET_DATE_TIME))
+  (.format (.withOffsetSameInstant t ZoneOffset/UTC) iso-millis))
 
 (defn ->offset-date-time
   "A java.time value as an OffsetDateTime (a LocalDateTime and a LocalDate are read in UTC), or nil

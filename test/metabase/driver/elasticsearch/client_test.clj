@@ -95,3 +95,13 @@
     (es/search c "logs-*,orders" {"query" {"match_all" {}}})
     (is (= "http://es:9200/logs-*%2Corders/_search" (:url (first @log))))
     (is (= {"query" {"match_all" {}}} (:body (first @log))))))
+
+(deftest all-rows-reads-every-page
+  (let [log  (atom [])
+        c    (client log
+                     {:status 200 :body (tu/fixture "sql-page-1.json")}
+                     {:status 200 :body (tu/fixture "sql-page-2.json")})
+        page (es/all-rows c "SHOW COLUMNS IN \"orders\"")]
+    (is (= 3 (count (:rows page))))
+    (is (nil? (:cursor page)))
+    (is (= 2 (count @log)))))

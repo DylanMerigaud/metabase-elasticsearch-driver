@@ -140,10 +140,6 @@ def main():
     mb.wait_healthy()
     mb.setup()
 
-    engines = mb.call("GET", "/api/session/properties").get("engines", {})
-    check("the plugin registers the elasticsearch engine", "elasticsearch" in engines,
-          sorted(engines))
-
     details = {"host": ES_URL.split("://", 1)[1].rsplit(":", 1)[0],
                "port": int(ES_URL.rsplit(":", 1)[1]), "ssl": False,
                "index-pattern": "orders,events-*"}
@@ -152,6 +148,8 @@ def main():
     db = mb.call("POST", "/api/database", {"engine": "elasticsearch", "name": "es",
                                            "details": details, "is_full_sync": True})
     db_id = db["id"]
+    check("the plugin registers the elasticsearch engine",
+          mb.call("GET", f"/api/database/{db_id}").get("engine") == "elasticsearch", db)
 
     # wait for the sync to see the orders fields
     deadline = time.time() + 240
@@ -226,10 +224,38 @@ def main():
     check("count by month", months == [("2024-03", 3), ("2024-04", 1), ("2024-05", 2)],
           err or rows)
 
-    rows, err = mbql({"aggregation": [["count"]],
-                      "breakout": [field("placed_at", **{"temporal-unit": "day-of-week"})]})
-    check("count by day of week runs", rows is not None and sum(r[1] for r in rows) == 6,
-          err or rows)
+    # placed_at: 03-01 Fri 10:00, 04-02 Tue 09:00, 03-15 Fri 18:30, 05-20 Mon 07:45,
+    # 05-21 Tue 12:00, 03-31 Sun 23:59 (all UTC)
+    expected_units = {
+        "day-of-week": [[1, 1], [2, 1], [3, 2], [6, 2]],
+        "hour-of-day": [[7, 1], [9, 1], [10, 1], [12, 1], [18, 1], [23, 1]],
+        "day-of-month": [[1, 1], [2, 1], [15, 1], [20, 1], [21, 1], [31, 1]],
+        "month-of-year": [[3, 3], [4, 1], [5, 2]],
+        "quarter-of-year": [[1, 3], [2, 3]],
+        "year": None,
+        "week": None,
+        "week-of-year": None,
+        "day-of-year": None,
+        "day": None,
+        "hour": None,
+        "quarter": None,
+    }
+    for unit, expected in expected_units.items():
+        f = field("placed_at", **{"temporal-unit": unit})
+        rows, err = mbql({"aggregation": [["count"]], "breakout": [f],
+                          "order-by": [["asc", f]]})
+        if expected is None:
+            ok = rows is not None and sum(r[1] for r in rows) == 6
+        else:
+            ok = rows == expected
+        check(f"count by {unit}", ok, err or rows)
+
+    rows, err = mbql({"fields": [field("customer")], "order-by": [["desc", field("total")]],
+                      "page": {"page": 1, "items": 2}})
+    check("first page of a paginated question", rows == [["dave"], ["bob"]], err or rows)
+
+    rows, err = mbql({"fields": [field("customer")], "page": {"page": 2, "items": 2}})
+    check("a later page is refused clearly", rows is None and "OFFSET" in str(err), err)
 
     rows, err = mbql({"aggregation": [["count"]], "filter": [">", field("total"), 10]})
     check("numeric filter", rows == [[4]], err or rows)

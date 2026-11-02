@@ -91,14 +91,14 @@
 (defmethod driver/describe-database* :elasticsearch
   [_driver database]
   (let [details (details-of database)
-        page    (es/query (es/client details) "SHOW TABLES" nil)]
+        page    (es/all-rows (es/client details) "SHOW TABLES")]
     {:tables (set (for [table-name (es.sync/table-names page (:index-pattern details))]
                     {:name table-name :schema nil :description nil}))}))
 
 (defmethod driver/describe-table :elasticsearch
   [_driver database {table-name :name}]
-  (let [page (es/query (es/client (details-of database))
-                       (str "SHOW COLUMNS IN " (es.sync/quote-identifier table-name)) nil)]
+  (let [page (es/all-rows (es/client (details-of database))
+                          (str "SHOW COLUMNS IN " (es.sync/quote-identifier table-name)))]
     {:name   table-name
      :schema nil
      :fields (set (es.sync/fields page))}))
@@ -150,7 +150,6 @@
 (defmethod sql.qp/date [:elasticsearch :hour-of-day]      [_ _ expr] [:hour_of_day expr])
 (defmethod sql.qp/date [:elasticsearch :day-of-month]     [_ _ expr] [:day_of_month expr])
 (defmethod sql.qp/date [:elasticsearch :day-of-year]      [_ _ expr] [:day_of_year expr])
-(defmethod sql.qp/date [:elasticsearch :week-of-year]     [_ _ expr] [:week_of_year expr])
 (defmethod sql.qp/date [:elasticsearch :week-of-year-iso] [_ _ expr] [:iso_week_of_year expr])
 (defmethod sql.qp/date [:elasticsearch :month-of-year]    [_ _ expr] [:month_of_year expr])
 (defmethod sql.qp/date [:elasticsearch :quarter-of-year]  [_ _ expr] [:quarter expr])
@@ -160,6 +159,25 @@
   ;; DAY_OF_WEEK is 1 for Sunday
   (sql.qp/adjust-day-of-week driver [:day_of_week expr]
                              (driver.common/start-of-week-offset-for-day :sunday)))
+
+;; In ORDER BY the SQL API binds a name to a SELECT alias before a field: with a group-by on
+;; DAY_OF_WEEK("placed_at") AS "placed_at", an ORDER BY DAY_OF_WEEK("placed_at") would read the
+;; integer alias. Sorting by the column alias itself is what was meant.
+(defmethod sql.qp/apply-top-level-clause [:elasticsearch :order-by]
+  [driver clause honeysql-form query]
+  ((get-method sql.qp/apply-top-level-clause [:sql :order-by])
+   driver clause honeysql-form
+   (update query :order-by sql.qp/rewrite-fields-to-force-using-column-aliases)))
+
+;; The SQL API has LIMIT but no OFFSET: the first page is a LIMIT, a later one is refused clearly.
+(defmethod sql.qp/apply-top-level-clause [:elasticsearch :page]
+  [driver _clause honeysql-form {{:keys [items page]} :page}]
+  (if (= 1 page)
+    ((get-method sql.qp/apply-top-level-clause [:sql :limit])
+     driver :limit honeysql-form {:limit items})
+    (throw (ex-info (str "Elasticsearch SQL has no OFFSET: only the first page of a paginated "
+                         "question can be read")
+                    {:page page :items items}))))
 
 ;;; -------------------------------------------------- execution --------------------------------------------------
 

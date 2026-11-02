@@ -240,6 +240,15 @@
 
 (m/=> reducible-rows [:=> [:cat Client Page] [:fn #(instance? clojure.lang.IReduceInit %)]])
 
+(defn all-rows
+  "Run `sql` (no parameters) and read every page: the catalogue statements (`SHOW TABLES`, `SHOW
+  COLUMNS`) page like any query, and an index with thousands of fields spans several pages."
+  [client sql]
+  (let [page (query client sql nil)]
+    (assoc page :rows (into [] (reducible-rows client page)) :cursor nil)))
+
+(m/=> all-rows [:=> [:cat Client :string] Page])
+
 ;;; --------------------------------------------------- search ----------------------------------------------------
 
 (defn search
