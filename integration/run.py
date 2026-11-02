@@ -122,6 +122,12 @@ class Metabase:
         self.session = out["id"]
 
 
+def failure(out):
+    """The error of a failed query and the SQL Metabase compiled, for the log."""
+    native = (out.get("native") or {}).get("query") if isinstance(out.get("native"), dict) else None
+    return f"{out.get('error')} | SQL: {native}"
+
+
 def check(name, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + name + ("" if ok else f": {detail}"))
     if not ok:
@@ -178,18 +184,19 @@ def main():
     def mbql(query, expect_ok=True):
         q = {"source-table": tid}
         q.update(query)
-        out = mb.call("POST", "/api/dataset", {"database": db_id, "type": "query", "query": q})
+        out = mb.call("POST", "/api/dataset", {"database": db_id, "type": "query", "query": q},
+                      ok=(200, 202, 500))
         if expect_ok and out.get("status") != "completed":
-            return None, out.get("error")
+            return None, failure(out)
         return out["data"]["rows"], out.get("error")
 
     def native(text, extra=None, parameters=None):
         body = {"database": db_id, "type": "native", "native": {"query": text, **(extra or {})}}
         if parameters:
             body["parameters"] = parameters
-        out = mb.call("POST", "/api/dataset", body)
+        out = mb.call("POST", "/api/dataset", body, ok=(200, 202, 500))
         if out.get("status") != "completed":
-            return None, out.get("error")
+            return None, failure(out)
         return out["data"]["rows"], None
 
     rows, err = mbql({"limit": 10})
