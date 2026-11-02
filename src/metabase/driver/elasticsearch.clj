@@ -163,9 +163,28 @@
 (defmethod sql.qp/date [:elasticsearch :year-of-era]      [_ _ expr] [:year expr])
 (defmethod sql.qp/date [:elasticsearch :day-of-week]
   [driver _ expr]
-  ;; DAY_OF_WEEK is 1 for Sunday
+  ;; DAY_OF_WEEK is 1 for Sunday. The shift to another start-of-week uses the % operator: the SQL
+  ;; API fails on MOD(DAY_OF_WEEK(...) + n, 7) ("Cannot cast ... Source to ... Expression").
   (sql.qp/adjust-day-of-week driver [:day_of_week expr]
-                             (driver.common/start-of-week-offset-for-day :sunday)))
+                             (driver.common/start-of-week-offset-for-day :sunday)
+                             (fn [a b] [:% a b])))
+
+;; Week of year with the 1st of January in week 1 and the next weeks starting on `start-of-week`
+;; (Metabase's definition): (day of year + day of week of the 1st of January, 1 for the start day,
+;; + 5) / 7, rounded down.
+(defn- week-of-year [expr start-of-week]
+  (let [days-after-sunday (mod (inc (binding [driver.common/*start-of-week* start-of-week]
+                                      (driver.common/start-of-week->int)))
+                               7)
+        jan-1             (trunc :year expr)
+        jan-1             (if (zero? days-after-sunday)
+                            jan-1
+                            [:date_add [:inline "day"] [:inline (- days-after-sunday)] jan-1])]
+    [:floor [:/ [:+ [:day_of_year expr] [:day_of_week jan-1] [:inline 5]] [:inline 7]]]))
+
+(defmethod sql.qp/date [:elasticsearch :week-of-year]          [_ _ expr] (week-of-year expr nil))
+(defmethod sql.qp/date [:elasticsearch :week-of-year-instance] [_ _ expr] (week-of-year expr nil))
+(defmethod sql.qp/date [:elasticsearch :week-of-year-us]       [_ _ expr] (week-of-year expr :sunday))
 
 ;; In ORDER BY the SQL API binds a name to a SELECT alias before a field: with a group-by on
 ;; DAY_OF_WEEK("placed_at") AS "placed_at", an ORDER BY DAY_OF_WEEK("placed_at") would read the

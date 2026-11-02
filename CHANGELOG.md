@@ -11,6 +11,9 @@
 - A grouped OpenSearch question sorted on its group keys gets `COUNT(*)` as a last sort key, so
   the plugin sorts the groups itself instead of ordering a computed key (an hour, a day of
   month) as text.
+- Elasticsearch: week of year follows Metabase's definition (the 1st of January in week 1, the
+  next weeks from the start-of-week setting); it was one week early when the year did not start on
+  that day. Day of week with a start-of-week other than Sunday no longer fails in the SQL API.
 - Each driver reads `GET /` and refuses a cluster of the other engine, naming the driver to pick.
 - Error messages carry OpenSearch's `details` line (`Invalid SQL query: can't resolve
   Symbol(... name=nope)`).
