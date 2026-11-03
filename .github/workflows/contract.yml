@@ -1,0 +1,93 @@
+name: contract
+
+# The jar of the latest published release, inside the newest Metabase release, against the newest
+# Elasticsearch 8 and 9, every week. A Metabase or Elasticsearch release that breaks the driver
+# turns this workflow red the week it ships, before a user finds it.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    name: newest upstream versions
+    runs-on: ubuntu-latest
+    outputs:
+      metabase: ${{ steps.pick.outputs.metabase }}
+      elasticsearch: ${{ steps.pick.outputs.elasticsearch }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/metabase/metabase/releases?per_page=50" > mb.json
+          curl -fsSL https://artifacts-api.elastic.co/v1/versions > es.json
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, re
+          def key(v):
+              return tuple(int(x) for x in re.findall(r"\d+", v))
+          mb = [r["tag_name"] for r in json.load(open("mb.json"))
+                if not r["draft"] and not r["prerelease"]
+                and re.fullmatch(r"v0\.\d+\.\d+", r["tag_name"])]
+          es = [v for v in json.load(open("es.json"))["versions"]
+                if re.fullmatch(r"\d+\.\d+\.\d+", v)]
+          newest = [max((v for v in es if v.startswith(f"{m}.")), key=key) for m in ("8", "9")]
+          print("metabase=" + max(mb, key=key))
+          print("elasticsearch=" + json.dumps(newest))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+  released-jar:
+    name: release jar on Metabase ${{ needs.versions.outputs.metabase }}, Elasticsearch ${{ matrix.elasticsearch }}
+    needs: versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        elasticsearch: ${{ fromJSON(needs.versions.outputs.elasticsearch) }}
+    services:
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:${{ matrix.elasticsearch }}
+        env:
+          discovery.type: single-node
+          ES_JAVA_OPTS: -Xms512m -Xmx512m
+          xpack.security.enabled: ${{ startsWith(matrix.elasticsearch, '9') }}
+          xpack.security.http.ssl.enabled: "false"
+          ELASTIC_PASSWORD: ci-password
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -s -u elastic:ci-password http://localhost:9200/_cluster/health | grep -qE 'green|yellow'"
+          --health-interval 10s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Download the jar of the latest published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p plugins
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern "*.jar" --dir plugins
+          ls -l plugins
+      - name: Download Metabase ${{ needs.versions.outputs.metabase }}
+        run: curl -fsSL -o metabase.jar "https://downloads.metabase.com/${{ needs.versions.outputs.metabase }}/metabase.jar"
+      - name: Start Metabase with the plugin
+        run: |
+          MB_PLUGINS_DIR=$PWD/plugins MB_DB_FILE=$PWD/mb MB_JETTY_PORT=3000 \
+            nohup java -Xmx2g -jar metabase.jar > metabase.log 2>&1 &
+      - name: End-to-end checks
+        env:
+          ES_URL: http://localhost:9200
+          ES_USER: ${{ startsWith(matrix.elasticsearch, '9') && 'elastic' || '' }}
+          ES_PASSWORD: ${{ startsWith(matrix.elasticsearch, '9') && 'ci-password' || '' }}
+          MB_URL: http://localhost:3000
+        run: python3 integration/run.py
+      - name: Metabase log
+        if: always()
+        run: grep -iE "elasticsearch|error|exception" metabase.log | tail -200 || true
